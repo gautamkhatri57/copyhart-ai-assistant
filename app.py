@@ -1,3 +1,4 @@
+import os
 import time
 import re
 
@@ -5,12 +6,21 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from dotenv import load_dotenv
+from google import genai
 
-from rag.retriever import retrieve
 from rag.reranker import rerank
 
-import ollama
+load_dotenv()
 
+api_key = os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    raise RuntimeError("GEMINI_API_KEY is not set")
+
+client = genai.Client(
+    api_key=api_key
+)
 
 app = FastAPI()
 
@@ -71,7 +81,8 @@ def is_generic_request(question):
         "spice",
         "logo",
         "website",
-        "branding"
+        "branding",
+        "brand"
     ]
 
     has_generic = any(
@@ -155,13 +166,11 @@ def detect_service(question):
         ],
         "logo": [
             "logo design",
-            "logo making",
-            "logo"
+            "logo making"
         ],
         "website": [
             "website development",
             "custom website",
-            "website",
             "seo"
         ],
         "brand": [
@@ -178,7 +187,7 @@ def detect_service(question):
         "fssai": "FSSAI License & Registration",
         "msme": "MSME / Udyam Registration",
         "iec": "IEC Registration",
-        "apeda": "APEDA Registration / RCMC",
+        "apeda": "APEDA Registration",
         "barcode": "Barcode Registration",
         "bis": "BIS Certification",
         "spice": "Spice Board Certification",
@@ -197,67 +206,9 @@ def detect_service(question):
     for service, keywords in service_keywords.items():
 
         if any(keyword in q for keyword in keywords):
-
-            results = retrieve(
-                question,
-                top_k=10
-            )
-
-            for result in results:
-
-                text = result.get("text", "")
-
-                if not text:
-                    continue
-
-                first_line = (
-                    text.strip()
-                    .splitlines()[0]
-                    .strip()
-                )
-
-                if service in clean_text(first_line):
-                    return first_line
-
             return fallback.get(service)
 
     return None
-
-
-def is_service_only_question(question):
-    q = clean_text(question)
-
-    service_only_terms = [
-        "trademark",
-        "trade mark",
-        "copyright",
-        "patent",
-        "fssai",
-        "food license",
-        "food licence",
-        "msme",
-        "udyam",
-        "iec",
-        "apeda",
-        "barcode",
-        "gtin",
-        "gs1",
-        "bis",
-        "spice board",
-        "iso 9001",
-        "iso 13485",
-        "iso 14001",
-        "iso 22000",
-        "iso 45001",
-        "iso 27001",
-        "gmp",
-        "logo",
-        "website",
-        "seo",
-        "branding"
-    ]
-
-    return q in service_only_terms
 
 
 def clarification_message(question):
@@ -266,15 +217,15 @@ def clarification_message(question):
     if "renewal" in q or "renew" in q:
         return (
             "Sure. Which renewal service are you looking for? "
-            "Please specify the service, such as Trademark, "
-            "Copyright, FSSAI, ISO, or another service."
+            "Please specify the service, such as Trademark, Copyright, "
+            "FSSAI, ISO, or another service."
         )
 
     if "registration" in q or "register" in q:
         return (
             "Sure. Which registration service are you looking for? "
-            "Please specify the service, such as Trademark, "
-            "Copyright, FSSAI, MSME, IEC, or another service."
+            "Please specify the service, such as Trademark, Copyright, "
+            "FSSAI, MSME, IEC, or another service."
         )
 
     if "certification" in q or "certificate" in q:
@@ -319,6 +270,16 @@ def is_generic_followup(question):
     )
 
 
+def unavailable_answer():
+    return (
+        "I don't have information about this in our current "
+        "service database.\n\n"
+        "You can reach out to our team for further assistance.\n\n"
+        "Phone: 8347520507\n"
+        "Email: gautamkhatri325@gmail.com"
+    )
+
+
 @app.post("/chat")
 def chat(request: ChatRequest):
 
@@ -354,39 +315,15 @@ def chat(request: ChatRequest):
     detected_service = detect_service(question)
 
     if detected_service:
-
         selected_service = detected_service
-
-        if is_service_only_question(question):
-
-            answer = (
-                f"Sure. What would you like to know about "
-                f"{detected_service}? "
-                f"You can ask about the process, required "
-                f"documents, eligibility, timeline, or other details."
-            )
-
-            conversation_history.append({
-                "role": "user",
-                "content": question
-            })
-
-            conversation_history.append({
-                "role": "assistant",
-                "content": answer
-            })
-
-            return {
-                "answer": answer
-            }
 
     elif not is_generic_followup(question):
 
         if not selected_service:
 
             answer = (
-                "Could you please specify which CopyHart "
-                "service you are referring to?"
+                "Could you please specify which CopyHart service "
+                "you are referring to?"
             )
 
             conversation_history.append({
@@ -418,10 +355,23 @@ within this service.
 
     retrieval_start = time.time()
 
-    results = retrieve(
-        retrieval_query,
-        top_k=10
-    )
+    try:
+
+        results = rerank(
+            retrieval_query,
+            top_k=5
+        )
+
+    except Exception as e:
+
+        print(f"Reranker error: {e}")
+
+        return {
+            "answer": (
+                "Sorry, I am unable to access the service "
+                "information right now. Please try again."
+            )
+        }
 
     retrieval_time = time.time() - retrieval_start
 
@@ -429,54 +379,29 @@ within this service.
         f"Retrieval time: {retrieval_time:.2f} seconds"
     )
 
-    rerank_start = time.time()
-
-    try:
-
-        reranked_results = rerank(
-            question=retrieval_query,
-            documents=results,
-            top_k=5
-        )
-
-    except TypeError:
-
-        try:
-
-            reranked_results = rerank(
-                retrieval_query,
-                top_k=5
-            )
-
-        except Exception as e:
-
-            print(
-                "Reranker error:",
-                str(e)
-            )
-
-            reranked_results = results[:5]
-
-    except Exception as e:
-
-        print(
-            "Reranker error:",
-            str(e)
-        )
-
-        reranked_results = results[:5]
-
-    rerank_time = time.time() - rerank_start
-
-    print(
-        f"Reranker time: {rerank_time:.2f} seconds"
-    )
-
     context = "\n\n".join(
         result.get("text", "")
-        for result in reranked_results
+        for result in results
         if result.get("text")
     )
+
+    if not context.strip():
+
+        answer = unavailable_answer()
+
+        conversation_history.append({
+            "role": "user",
+            "content": question
+        })
+
+        conversation_history.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+        return {
+            "answer": answer
+        }
 
     history = "\n".join(
         f"{item['role']}: {item['content']}"
@@ -506,20 +431,19 @@ follow-up questions.
 "What documents do I need?"
 "How do I apply?"
 "What is the process?"
-"How long does it take?"
 "What are the requirements?"
-
 must be answered for the CURRENT SERVICE.
 
-6. Do NOT switch to another service just because
-another retrieved result looks similar.
+6. Do NOT switch to another service because another
+retrieved result looks similar.
 
-7. If the user asks about a specific activity that
-is NOT actually described in the Service Data,
-do NOT substitute a similar service.
+7. If the user asks about a specific activity, process,
+requirement, document, timeline or other information that
+is NOT actually described in the Service Data, do NOT
+use a similar service as a substitute.
 
-If the requested information is unavailable,
-reply exactly:
+8. If the requested information is unavailable in the
+Service Data, reply exactly:
 
 I don't have information about this in our current service database.
 
@@ -528,19 +452,20 @@ You can reach out to our team for further assistance.
 Phone: 8347520507
 Email: gautamkhatri325@gmail.com
 
-8. Contact information must ONLY be provided when
-the requested information is unavailable.
+9. Contact information must ONLY be provided when the
+requested information is unavailable.
 
-9. Keep normal answers short, clear and professional.
+10. Keep normal answers short, clear and professional.
 
-10. Do not mention retrieval, context, database,
-AI model, reranker or internal processing.
+11. Do not mention context, retrieval, database, RAG,
+reranker, AI model, prompt or internal processing.
 
-11. If the Service Data contains the answer,
-answer directly and clearly.
+12. Do not make assumptions based on general knowledge.
 
-12. Do not add information that is not present
-in the Service Data.
+13. Answer only what the user asked.
+
+14. If the Service Data contains the exact answer,
+give that answer clearly.
 
 Previous Conversation:
 {history}
@@ -554,27 +479,35 @@ Current User Question:
 Answer:
 """
 
-    ollama_start = time.time()
+    gemini_start = time.time()
 
-    response = ollama.chat(
-        model="qwen2.5:7b",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
+    try:
+
+        response = client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt,
+            config={
+                "temperature": 0.1
             }
-        ],
-        options={
-            "temperature": 0.1
+        )
+
+        answer = response.text.strip()
+
+    except Exception as e:
+
+        print(f"Gemini error: {e}")
+
+        return {
+            "answer": (
+                "Sorry, something went wrong while processing "
+                "your request. Please try again."
+            )
         }
-    )
 
-    answer = response["message"]["content"].strip()
-
-    ollama_time = time.time() - ollama_start
+    gemini_time = time.time() - gemini_start
 
     print(
-        f"Ollama time: {ollama_time:.2f} seconds"
+        f"Gemini time: {gemini_time:.2f} seconds"
     )
 
     conversation_history.append({
