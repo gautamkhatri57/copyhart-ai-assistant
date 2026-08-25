@@ -1,15 +1,20 @@
 import os
 import time
 import re
+import json
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from google import genai
 
 from rag.reranker import rerank
+
+
+# =========================================================
+# ENVIRONMENT
+# =========================================================
 
 load_dotenv()
 
@@ -22,7 +27,30 @@ client = genai.Client(
     api_key=api_key
 )
 
+
+# =========================================================
+# FASTAPI
+# =========================================================
+
 app = FastAPI()
+
+
+# =========================================================
+# CORS
+# =========================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# =========================================================
+# CONVERSATION STATE
+# =========================================================
 
 conversation_history = []
 selected_service = None
@@ -32,17 +60,9 @@ class ChatRequest(BaseModel):
     question: str
 
 
-app.mount(
-    "/static",
-    StaticFiles(directory="frontend"),
-    name="static"
-)
-
-
-@app.get("/")
-def home():
-    return FileResponse("frontend/index.html")
-
+# =========================================================
+# UTILITY
+# =========================================================
 
 def clean_text(text):
     return re.sub(
@@ -52,308 +72,163 @@ def clean_text(text):
     ).strip()
 
 
-def is_generic_request(question):
-    q = clean_text(question)
+def get_history():
 
-    generic_terms = [
-        "renewal",
-        "renew",
-        "registration",
-        "register",
-        "certification",
-        "certificate"
-    ]
-
-    services = [
-        "trademark",
-        "copyright",
-        "patent",
-        "fssai",
-        "food license",
-        "food licence",
-        "iso",
-        "msme",
-        "udyam",
-        "iec",
-        "apeda",
-        "barcode",
-        "bis",
-        "spice",
-        "logo",
-        "website",
-        "branding",
-        "brand"
-    ]
-
-    has_generic = any(
-        term in q
-        for term in generic_terms
-    )
-
-    has_service = any(
-        service in q
-        for service in services
-    )
-
-    return has_generic and not has_service
-
-
-def detect_service(question):
-    q = clean_text(question)
-
-    service_keywords = {
-        "trademark": [
-            "trademark",
-            "trade mark"
-        ],
-        "copyright": [
-            "copyright"
-        ],
-        "patent": [
-            "patent"
-        ],
-        "fssai": [
-            "fssai",
-            "food license",
-            "food licence",
-            "food registration"
-        ],
-        "msme": [
-            "msme",
-            "udyam"
-        ],
-        "iec": [
-            "iec",
-            "import export code"
-        ],
-        "apeda": [
-            "apeda"
-        ],
-        "barcode": [
-            "barcode",
-            "gtin",
-            "gs1"
-        ],
-        "bis": [
-            "bis certification",
-            "bis"
-        ],
-        "spice": [
-            "spice board",
-            "spice certification"
-        ],
-        "iso 9001": [
-            "iso 9001"
-        ],
-        "iso 13485": [
-            "iso 13485"
-        ],
-        "iso 14001": [
-            "iso 14001"
-        ],
-        "iso 22000": [
-            "iso 22000"
-        ],
-        "iso 45001": [
-            "iso 45001"
-        ],
-        "iso 27001": [
-            "iso 27001"
-        ],
-        "gmp": [
-            "gmp",
-            "good manufacturing"
-        ],
-        "logo": [
-            "logo design",
-            "logo making"
-        ],
-        "website": [
-            "website development",
-            "custom website",
-            "seo"
-        ],
-        "brand": [
-            "branding",
-            "brand development",
-            "brand marketing"
-        ]
-    }
-
-    fallback = {
-        "trademark": "Trademark Registration",
-        "copyright": "Copyright Registration",
-        "patent": "Patent Registration",
-        "fssai": "FSSAI License & Registration",
-        "msme": "MSME / Udyam Registration",
-        "iec": "IEC Registration",
-        "apeda": "APEDA Registration",
-        "barcode": "Barcode Registration",
-        "bis": "BIS Certification",
-        "spice": "Spice Board Certification",
-        "iso 9001": "ISO 9001 Certification",
-        "iso 13485": "ISO 13485 Medical Devices",
-        "iso 14001": "ISO 14001 Environmental Management",
-        "iso 22000": "ISO 22000 Food Safety Management",
-        "iso 45001": "ISO 45001 Occupational Health & Safety",
-        "iso 27001": "ISO 27001 Information Security",
-        "gmp": "Good Manufacturing Practices (GMP) Certification",
-        "logo": "Logo Design and Making",
-        "website": "Custom Websites & SEO",
-        "brand": "Brand Development & Marketing"
-    }
-
-    for service, keywords in service_keywords.items():
-
-        if any(keyword in q for keyword in keywords):
-            return fallback.get(service)
-
-    return None
-
-
-def clarification_message(question):
-    q = clean_text(question)
-
-    if "renewal" in q or "renew" in q:
-        return (
-            "Sure. Which renewal service are you looking for? "
-            "Please specify the service, such as Trademark, Copyright, "
-            "FSSAI, ISO, or another service."
-        )
-
-    if "registration" in q or "register" in q:
-        return (
-            "Sure. Which registration service are you looking for? "
-            "Please specify the service, such as Trademark, Copyright, "
-            "FSSAI, MSME, IEC, or another service."
-        )
-
-    if "certification" in q or "certificate" in q:
-        return (
-            "Sure. Which certification service are you looking for? "
-            "Please specify the service, such as ISO, BIS, FSSAI, "
-            "or another certification."
-        )
-
-    return (
-        "Sure. Could you please specify which CopyHart service "
-        "you are looking for?"
+    return "\n".join(
+        f"{item['role']}: {item['content']}"
+        for item in conversation_history[-8:]
     )
 
 
-def is_generic_followup(question):
-    q = clean_text(question)
+# =========================================================
+# AI INTENT ANALYSIS
+# =========================================================
 
-    followups = [
-        "what documents",
-        "which documents",
-        "documents required",
-        "required documents",
-        "how can i apply",
-        "how do i apply",
-        "how to apply",
-        "what is the process",
-        "process",
-        "how long",
-        "timeline",
-        "eligibility",
-        "what are the requirements",
-        "requirements",
-        "what is it",
-        "tell me more",
-        "how does it work"
-    ]
+def analyze_intent(question):
 
-    return any(
-        phrase in q
-        for phrase in followups
-    )
+    history = get_history()
 
+    prompt = f"""
+You are the intent analyzer for CopyHart AI Assistant.
 
-def unavailable_answer():
-    return (
-        "I don't have information about this in our current "
-        "service database.\n\n"
-        "You can reach out to our team for further assistance.\n\n"
-        "Phone: 8347520507\n"
-        "Email: gautamkhatri325@gmail.com"
-    )
+Your job is to understand what the user wants.
 
+Use the conversation history to understand context.
 
-@app.post("/chat")
-def chat(request: ChatRequest):
+The user may mention:
 
-    global selected_service
+- a broad service
+- a specific service
+- an activity
+- a follow-up question
+- a document question
+- a process question
+- a timeline question
+- a requirement question
 
-    total_start = time.time()
+IMPORTANT:
 
-    question = request.question.strip()
+If the user only mentions a broad service such as:
 
-    if not question:
-        return {
-            "answer": "Please enter a question."
-        }
+"trademark"
+"copyright"
+"patent"
+"FSSAI"
+"ISO"
 
-    if is_generic_request(question):
+and has NOT specified what they want to do with that service,
+then clarification is required.
 
-        answer = clarification_message(question)
+Example:
 
-        conversation_history.append({
-            "role": "user",
-            "content": question
-        })
+User: trademark
 
-        conversation_history.append({
-            "role": "assistant",
-            "content": answer
-        })
+Return:
 
-        return {
-            "answer": answer
-        }
+{{
+    "needs_clarification": true,
+    "service": "Trademark",
+    "intent": "service_selection",
+    "clarification": "Which trademark service are you looking for?"
+}}
 
-    detected_service = detect_service(question)
+But:
 
-    if detected_service:
-        selected_service = detected_service
+User: trademark registration
 
-    elif not is_generic_followup(question):
+Return:
 
-        if not selected_service:
+{{
+    "needs_clarification": false,
+    "service": "Trademark Registration",
+    "intent": "information_request",
+    "clarification": ""
+}}
 
-            answer = (
-                "Could you please specify which CopyHart service "
-                "you are referring to?"
-            )
+And:
 
-            conversation_history.append({
-                "role": "user",
-                "content": question
-            })
+User: what documents are required?
 
-            conversation_history.append({
-                "role": "assistant",
-                "content": answer
-            })
+If previous conversation is:
 
-            return {
-                "answer": answer
+User: trademark registration
+
+then understand that the user is asking:
+
+"What documents are required for Trademark Registration?"
+
+Return:
+
+{{
+    "needs_clarification": false,
+    "service": "Trademark Registration",
+    "intent": "documents",
+    "clarification": ""
+}}
+
+Do NOT invent information.
+
+Return ONLY valid JSON.
+
+Conversation History:
+{history}
+
+Current User:
+{question}
+"""
+
+    try:
+
+        response = client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt,
+            config={
+                "temperature": 0.1
             }
+        )
+
+        text = response.text.strip()
+
+        text = re.sub(
+            r"```json|```",
+            "",
+            text
+        ).strip()
+
+        return json.loads(text)
+
+    except Exception as e:
+
+        print(f"Intent analysis error: {e}")
+
+        return {
+            "needs_clarification": False,
+            "service": None,
+            "intent": "information_request",
+            "clarification": ""
+        }
+
+
+# =========================================================
+# RAG RETRIEVAL
+# =========================================================
+
+def retrieve_information(question, service):
 
     retrieval_query = question
 
-    if selected_service:
+    if service:
 
         retrieval_query = f"""
-Service: {selected_service}
+Current Service:
+{service}
 
-User Question: {question}
+User Question:
+{question}
 
-Find information specifically relevant to this user question
-within this service.
+Retrieve information specifically relevant to this service
+and this user question.
 """
-
-    retrieval_start = time.time()
 
     try:
 
@@ -366,18 +241,7 @@ within this service.
 
         print(f"Reranker error: {e}")
 
-        return {
-            "answer": (
-                "Sorry, I am unable to access the service "
-                "information right now. Please try again."
-            )
-        }
-
-    retrieval_time = time.time() - retrieval_start
-
-    print(
-        f"Retrieval time: {retrieval_time:.2f} seconds"
-    )
+        return ""
 
     context = "\n\n".join(
         result.get("text", "")
@@ -385,28 +249,16 @@ within this service.
         if result.get("text")
     )
 
-    if not context.strip():
+    return context
 
-        answer = unavailable_answer()
 
-        conversation_history.append({
-            "role": "user",
-            "content": question
-        })
+# =========================================================
+# FINAL AI RESPONSE
+# =========================================================
 
-        conversation_history.append({
-            "role": "assistant",
-            "content": answer
-        })
+def generate_answer(question, service, context):
 
-        return {
-            "answer": answer
-        }
-
-    history = "\n".join(
-        f"{item['role']}: {item['content']}"
-        for item in conversation_history[-6:]
-    )
+    history = get_history()
 
     prompt = f"""
 You are CopyHart AI Assistant.
@@ -414,7 +266,7 @@ You are CopyHart AI Assistant.
 Always answer in English.
 
 CURRENT SERVICE:
-{selected_service}
+{service}
 
 STRICT RULES:
 
@@ -424,26 +276,24 @@ STRICT RULES:
 
 3. Never guess or invent information.
 
-4. The CURRENT SERVICE has priority for generic
+4. Use the conversation history to understand
 follow-up questions.
 
-5. Generic follow-up questions such as:
+5. If the user asks:
+
 "What documents do I need?"
 "How do I apply?"
 "What is the process?"
 "What are the requirements?"
-must be answered for the CURRENT SERVICE.
+"What is the timeline?"
 
-6. Do NOT switch to another service because another
-retrieved result looks similar.
+understand the question according to the CURRENT SERVICE.
 
-7. If the user asks about a specific activity, process,
-requirement, document, timeline or other information that
-is NOT actually described in the Service Data, do NOT
-use a similar service as a substitute.
+6. Never switch to another service unless the user
+explicitly changes the service.
 
-8. If the requested information is unavailable in the
-Service Data, reply exactly:
+7. If the requested information is not available
+in the Service Data, reply exactly:
 
 I don't have information about this in our current service database.
 
@@ -452,22 +302,26 @@ You can reach out to our team for further assistance.
 Phone: 8347520507
 Email: gautamkhatri325@gmail.com
 
-9. Contact information must ONLY be provided when the
-requested information is unavailable.
+8. Contact information must ONLY be provided when
+the requested information is unavailable.
 
-10. Keep normal answers short, clear and professional.
+9. Keep answers short, clear and professional.
 
-11. Do not mention context, retrieval, database, RAG,
-reranker, AI model, prompt or internal processing.
+10. Do not mention:
+- RAG
+- retrieval
+- reranker
+- database
+- prompt
+- AI model
+- internal processing
 
-12. Do not make assumptions based on general knowledge.
+11. Answer only what the user asked.
 
-13. Answer only what the user asked.
+12. If the Service Data contains the answer,
+give the answer clearly.
 
-14. If the Service Data contains the exact answer,
-give that answer clearly.
-
-Previous Conversation:
+Conversation History:
 {history}
 
 Service Data:
@@ -479,8 +333,6 @@ Current User Question:
 Answer:
 """
 
-    gemini_start = time.time()
-
     try:
 
         response = client.models.generate_content(
@@ -491,34 +343,174 @@ Answer:
             }
         )
 
-        answer = response.text.strip()
+        return response.text.strip()
 
     except Exception as e:
 
         print(f"Gemini error: {e}")
 
+        return (
+            "Sorry, something went wrong while processing "
+            "your request. Please try again."
+        )
+
+
+# =========================================================
+# CHAT API
+# =========================================================
+
+@app.post("/chat")
+def chat(request: ChatRequest):
+
+    global selected_service
+
+    total_start = time.time()
+
+    question = request.question.strip()
+
+    if not question:
+
         return {
-            "answer": (
-                "Sorry, something went wrong while processing "
-                "your request. Please try again."
-            )
+            "answer": "Please enter a question."
         }
 
-    gemini_time = time.time() - gemini_start
-
-    print(
-        f"Gemini time: {gemini_time:.2f} seconds"
-    )
+    # -----------------------------------------------------
+    # Save User Message
+    # -----------------------------------------------------
 
     conversation_history.append({
         "role": "user",
         "content": question
     })
 
+    # -----------------------------------------------------
+    # AI Intent Analysis
+    # -----------------------------------------------------
+
+    intent_start = time.time()
+
+    intent_data = analyze_intent(question)
+
+    intent_time = time.time() - intent_start
+
+    print(
+        f"Intent analysis time: {intent_time:.2f} seconds"
+    )
+
+    needs_clarification = intent_data.get(
+        "needs_clarification",
+        False
+    )
+
+    detected_service = intent_data.get(
+        "service"
+    )
+
+    clarification = intent_data.get(
+        "clarification",
+        ""
+    )
+
+    # -----------------------------------------------------
+    # Update Current Service
+    # -----------------------------------------------------
+
+    if detected_service:
+
+        selected_service = detected_service
+
+    # -----------------------------------------------------
+    # Clarification Required
+    # -----------------------------------------------------
+
+    if needs_clarification:
+
+        if not clarification:
+
+            clarification = (
+                f"Sure! Which {selected_service} service "
+                "are you looking for?"
+            )
+
+        conversation_history.append({
+            "role": "assistant",
+            "content": clarification
+        })
+
+        return {
+            "answer": clarification
+        }
+
+    # -----------------------------------------------------
+    # Retrieval
+    # -----------------------------------------------------
+
+    retrieval_start = time.time()
+
+    context = retrieve_information(
+        question,
+        selected_service
+    )
+
+    retrieval_time = time.time() - retrieval_start
+
+    print(
+        f"Retrieval time: {retrieval_time:.2f} seconds"
+    )
+
+    # -----------------------------------------------------
+    # No Information Found
+    # -----------------------------------------------------
+
+    if not context.strip():
+
+        answer = (
+            "I don't have information about this in our "
+            "current service database.\n\n"
+            "You can reach out to our team for further assistance.\n\n"
+            "Phone: 8347520507\n"
+            "Email: gautamkhatri325@gmail.com"
+        )
+
+        conversation_history.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+        return {
+            "answer": answer
+        }
+
+    # -----------------------------------------------------
+    # Generate Answer
+    # -----------------------------------------------------
+
+    gemini_start = time.time()
+
+    answer = generate_answer(
+        question,
+        selected_service,
+        context
+    )
+
+    gemini_time = time.time() - gemini_start
+
+    print(
+        f"Gemini answer time: {gemini_time:.2f} seconds"
+    )
+
+    # -----------------------------------------------------
+    # Save Assistant Response
+    # -----------------------------------------------------
+
     conversation_history.append({
         "role": "assistant",
         "content": answer
     })
+
+    # -----------------------------------------------------
+    # Total Time
+    # -----------------------------------------------------
 
     total_time = time.time() - total_start
 
