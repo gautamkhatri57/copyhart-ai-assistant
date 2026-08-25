@@ -1,53 +1,27 @@
-from sentence_transformers import CrossEncoder
 from rag.retriever import retrieve
 
 
-print("Loading reranker model...")
-
-reranker_model = CrossEncoder(
-    "cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
-
-
 def rerank(question, top_k=5):
+    """
+    Lightweight reranking for deployment.
 
-    # Retrieve more candidates first
-    retrieved_results = retrieve(
-        question,
-        top_k=10
-    )
+    Uses FAISS retrieval results directly instead of loading
+    a separate CrossEncoder model.
+    """
 
-    if not retrieved_results:
+    results = retrieve(question, top_k=top_k)
+
+    if not results:
         return []
 
-    # Create question-document pairs
-    pairs = [
-        (question, result["text"])
-        for result in retrieved_results
+    return [
+        {
+            "score": result.get("score", 0.0),
+            "text": result.get("text", "")
+        }
+        for result in results
+        if result.get("text")
     ]
-
-    # Calculate reranking scores
-    scores = reranker_model.predict(pairs)
-
-    reranked_results = []
-
-    for result, score in zip(
-        retrieved_results,
-        scores
-    ):
-
-        reranked_results.append({
-            "score": float(score),
-            "text": result["text"]
-        })
-
-    # Highest score first
-    reranked_results.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    return reranked_results[:top_k]
 
 
 if __name__ == "__main__":
@@ -59,10 +33,9 @@ if __name__ == "__main__":
         top_k=5
     )
 
-    print("\n===== RERANKED RESULTS =====")
+    print("\n===== RESULTS =====")
 
     for result in results:
-
         print("\n--- RESULT ---")
         print("Score:", result["score"])
         print(result["text"][:1000])
