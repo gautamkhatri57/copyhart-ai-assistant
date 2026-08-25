@@ -7,7 +7,7 @@ numpy
 pypdf
 sentence-transformers
 scikit-learn
-torch==2.2.2
+torch==2.13.0
 transformers
 huggingface-hub
 safetensors
