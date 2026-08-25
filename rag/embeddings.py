@@ -1,9 +1,18 @@
+
 from sentence_transformers import SentenceTransformer
 from rag.pdf_reader import chunks
 import numpy as np
 import os
 
-EMBEDDINGS_FILE = "data/embeddings.npy"
+# Project root directory
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Absolute path to embeddings file
+DATA_DIR = os.path.join(BASE_DIR, "data")
+EMBEDDINGS_FILE = os.path.join(DATA_DIR, "embeddings.npy")
+
+# Make sure data directory exists
+os.makedirs(DATA_DIR, exist_ok=True)
 
 print("Loading local embedding model...")
 
@@ -17,7 +26,7 @@ if os.path.exists(EMBEDDINGS_FILE):
     embeddings = np.load(
         EMBEDDINGS_FILE,
         allow_pickle=True
-    ).tolist()
+    )
 
 else:
 
@@ -37,3 +46,4 @@ else:
 
 
 print("Embedding dimension:", len(embeddings[0]))
+
