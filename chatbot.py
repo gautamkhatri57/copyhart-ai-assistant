@@ -10,26 +10,28 @@ from rag.reranker import rerank
 
 
 # =========================================================
-# ENVIRONMENT
+# ENVIRONMENT / API KEY
 # =========================================================
 
 load_dotenv()
 
-# Local .env
-api_key = os.getenv("GEMINI_API_KEY")
+# First try Streamlit Cloud Secrets
+api_key = st.secrets.get("GEMINI_API_KEY", None)
 
-# Streamlit Cloud Secrets
-try:
-    if not api_key:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-except Exception:
-    pass
+# If not found, use local .env
+if not api_key:
+    api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
     raise RuntimeError(
-        "GEMINI_API_KEY is not configured. "
-        "Add it to .env or Streamlit Secrets."
+        "GEMINI_API_KEY is not set. "
+        "Add it to .env locally or Streamlit Cloud Secrets."
     )
+
+
+# =========================================================
+# GEMINI CLIENT
+# =========================================================
 
 client = genai.Client(api_key=api_key)
 
@@ -37,56 +39,81 @@ MODEL_NAME = "gemini-3.6-flash"
 
 
 # =========================================================
-# CONVERSATION
+# CONVERSATION STATE
 # =========================================================
 
-conversation_history = []
-selected_service = None
+if "conversation_history" not in st.session_state:
+    st.session_state.conversation_history = []
+
+if "selected_service" not in st.session_state:
+    st.session_state.selected_service = None
 
 
 # =========================================================
 # GREETING
 # =========================================================
 
-def is_greeting(text):
-
-    text = text.lower().strip()
-
-    greetings = [
-        "hi",
-        "hello",
-        "hey",
-        "hii",
-        "hiii",
-        "helo",
-        "good morning",
-        "good afternoon",
-        "good evening",
-        "how are you",
-        "hey there",
-        "hello there"
-    ]
-
-    return text in greetings
+GREETINGS = {
+    "hi",
+    "hello",
+    "hey",
+    "hii",
+    "hiii",
+    "hello there",
+    "hey there",
+    "good morning",
+    "good afternoon",
+    "good evening"
+}
 
 
-# =========================================================
-# UTILITY
-# =========================================================
+def is_greeting(question):
 
-def get_history():
+    cleaned = re.sub(
+        r"[^a-zA-Z\s]",
+        "",
+        question.lower()
+    ).strip()
 
-    if not conversation_history:
-        return ""
+    return cleaned in GREETINGS
 
-    return "\n".join(
-        f"{item['role']}: {item['content']}"
-        for item in conversation_history[-8:]
+
+def greeting_response():
+
+    return (
+        "Hello! 👋 I'm CopyHart AI Assistant. "
+        "How can I help you today?"
     )
 
 
 # =========================================================
-# INTENT ANALYSIS
+# HISTORY
+# =========================================================
+
+def get_history():
+
+    history = st.session_state.conversation_history
+
+    return "\n".join(
+        f"{item['role']}: {item['content']}"
+        for item in history[-8:]
+    )
+
+
+# =========================================================
+# SAVE MESSAGE
+# =========================================================
+
+def save_message(role, content):
+
+    st.session_state.conversation_history.append({
+        "role": role,
+        "content": content
+    })
+
+
+# =========================================================
+# AI INTENT ANALYSIS
 # =========================================================
 
 def analyze_intent(question):
@@ -96,7 +123,28 @@ def analyze_intent(question):
     prompt = f"""
 You are the intent analyzer for CopyHart AI Assistant.
 
-Understand the user's request.
+Understand what the user wants.
+
+The user may ask about:
+
+- Trademark
+- Copyright
+- Patent
+- FSSAI
+- ISO
+- GST
+- Company Registration
+- MSME / Udyam
+- IEC
+- Website
+- SEO
+- Branding
+- Logo
+- Other CopyHart services
+
+Use conversation history for follow-up questions.
+
+IMPORTANT:
 
 If the user only mentions a broad service such as:
 
@@ -106,8 +154,8 @@ patent
 FSSAI
 ISO
 
-and does not specify what they want,
-ask a clarification question.
+and has NOT specified what they want,
+ask for clarification.
 
 Example:
 
@@ -123,7 +171,7 @@ Return:
     "clarification": "Which trademark service are you looking for?"
 }}
 
-Example:
+But:
 
 User:
 trademark registration
@@ -137,13 +185,24 @@ Return:
     "clarification": ""
 }}
 
-If the previous service was FSSAI and the user says:
+Follow-up example:
 
-what documents are required?
+Previous:
+User: trademark registration
 
-understand that they mean:
+Current:
+User: what documents are required?
 
-documents required for FSSAI.
+Return:
+
+{{
+    "needs_clarification": false,
+    "service": "Trademark Registration",
+    "intent": "documents",
+    "clarification": ""
+}}
+
+Do not invent information.
 
 Return ONLY valid JSON.
 
@@ -163,18 +222,38 @@ Current User:
 
         text = response.text.strip()
 
-        # Remove markdown JSON fences
-        text = re.sub(r"```json", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"```", "", text)
+        # Remove markdown JSON blocks if Gemini returns them
+        text = re.sub(
+            r"^```json\s*",
+            "",
+            text,
+            flags=re.IGNORECASE
+        )
+
+        text = re.sub(
+            r"^```\s*",
+            "",
+            text
+        )
+
+        text = re.sub(
+            r"\s*```$",
+            "",
+            text
+        )
+
         text = text.strip()
 
         return json.loads(text)
 
     except Exception as e:
 
-        print("INTENT ERROR:", repr(e))
+        print("=" * 60)
+        print("INTENT ANALYSIS ERROR")
+        print(e)
+        print("=" * 60)
 
-        # Do not stop the chatbot if intent analysis fails
+        # Safe fallback
         return {
             "needs_clarification": False,
             "service": None,
@@ -187,20 +266,22 @@ Current User:
 # RAG RETRIEVAL
 # =========================================================
 
-def retrieve_information(question, service=None):
+def retrieve_information(question, service):
+
+    retrieval_query = question
 
     if service:
 
         retrieval_query = f"""
-Service: {service}
+Current Service:
+{service}
 
 User Question:
 {question}
+
+Retrieve information specifically relevant to
+the current service and user question.
 """
-
-    else:
-
-        retrieval_query = question
 
     try:
 
@@ -224,21 +305,23 @@ User Question:
 
                 text = str(result)
 
-            if text and text.strip():
-
-                context_parts.append(text.strip())
+            if text:
+                context_parts.append(text)
 
         return "\n\n".join(context_parts)
 
     except Exception as e:
 
-        print("RAG ERROR:", repr(e))
+        print("=" * 60)
+        print("RAG / RERANKER ERROR")
+        print(e)
+        print("=" * 60)
 
         return ""
 
 
 # =========================================================
-# FINAL ANSWER
+# FINAL AI RESPONSE
 # =========================================================
 
 def generate_answer(question, service, context):
@@ -248,36 +331,37 @@ def generate_answer(question, service, context):
     prompt = f"""
 You are CopyHart AI Assistant.
 
-Answer the user using ONLY the Service Data below.
+Always answer in English.
 
-RULES:
+CURRENT SERVICE:
+{service}
 
-1. Always answer in English.
+STRICT RULES:
 
-2. Do NOT use outside knowledge.
+1. Use ONLY the Service Data provided below.
 
-3. Do NOT invent information.
+2. Never use outside knowledge.
 
-4. Use conversation history for follow-up questions.
+3. Never guess or invent information.
+
+4. Use conversation history to understand
+follow-up questions.
 
 5. If the user asks:
-   - documents
-   - process
-   - requirements
-   - timeline
-   - eligibility
-   - procedure
 
-   understand the question according to the current service.
+"What documents do I need?"
+"How do I apply?"
+"What is the process?"
+"What are the requirements?"
+"What is the timeline?"
 
-6. Do not switch services unless the user explicitly changes
-the service.
+understand the question according to the CURRENT SERVICE.
 
-7. If the Service Data contains the answer,
-answer clearly and directly.
+6. Never switch to another service unless the user
+explicitly changes the service.
 
-8. If the Service Data does NOT contain the requested information,
-reply exactly:
+7. If the requested information is not available
+in the Service Data, reply exactly:
 
 I don't have information about this in our current service database.
 
@@ -286,25 +370,25 @@ You can reach out to our team for further assistance.
 Phone: 8347520507
 Email: gautamkhatri325@gmail.com
 
-9. Do not provide contact information when the answer exists
-in the Service Data.
+8. Contact information must ONLY be provided when
+the requested information is unavailable.
 
-10. Keep answers short, clear and professional.
+9. Keep answers short, clear and professional.
 
-11. Never mention:
+10. Do not mention:
+
 - RAG
+- retrieval
 - reranker
 - database
-- embeddings
-- vector
 - prompt
 - AI model
 - internal processing
 
-12. Answer only what the user asked.
+11. Answer only what the user asked.
 
-Current Service:
-{service}
+12. If the Service Data contains the answer,
+give the answer clearly.
 
 Conversation History:
 {history}
@@ -325,19 +409,22 @@ Answer:
             contents=prompt
         )
 
-        answer = response.text
+        answer = response.text.strip()
 
         if not answer:
             return (
-                "I don't have information about this in our "
-                "current service database."
+                "Sorry, I could not generate a response right now. "
+                "Please try again."
             )
 
-        return answer.strip()
+        return answer
 
     except Exception as e:
 
-        print("GEMINI ERROR:", repr(e))
+        print("=" * 60)
+        print("GEMINI ERROR")
+        print(e)
+        print("=" * 60)
 
         return (
             "Sorry, something went wrong while processing "
@@ -346,54 +433,41 @@ Answer:
 
 
 # =========================================================
-# MAIN CHAT
+# MAIN CHAT FUNCTION
 # =========================================================
 
 def chat(question):
 
-    global selected_service
-
     question = question.strip()
 
     if not question:
-
         return "Please enter a question."
 
-    # =====================================================
+    # -----------------------------------------------------
     # GREETING
-    # =====================================================
+    # -----------------------------------------------------
 
     if is_greeting(question):
 
-        answer = (
-            "Hello! 👋 I'm CopyHart AI Assistant. "
-            "How can I help you today?"
-        )
+        answer = greeting_response()
 
-        conversation_history.append({
-            "role": "user",
-            "content": question
-        })
-
-        conversation_history.append({
-            "role": "assistant",
-            "content": answer
-        })
+        save_message("user", question)
+        save_message("assistant", answer)
 
         return answer
 
-    # =====================================================
+    # -----------------------------------------------------
     # SAVE USER MESSAGE
-    # =====================================================
+    # -----------------------------------------------------
 
-    conversation_history.append({
-        "role": "user",
-        "content": question
-    })
+    save_message(
+        "user",
+        question
+    )
 
-    # =====================================================
-    # INTENT
-    # =====================================================
+    # -----------------------------------------------------
+    # INTENT ANALYSIS
+    # -----------------------------------------------------
 
     intent_data = analyze_intent(question)
 
@@ -411,46 +485,57 @@ def chat(question):
         ""
     )
 
-    # =====================================================
-    # SERVICE
-    # =====================================================
+    # -----------------------------------------------------
+    # UPDATE CURRENT SERVICE
+    # -----------------------------------------------------
 
     if detected_service:
 
-        selected_service = detected_service
+        st.session_state.selected_service = detected_service
 
-    # =====================================================
+    selected_service = st.session_state.selected_service
+
+    # -----------------------------------------------------
     # CLARIFICATION
-    # =====================================================
+    # -----------------------------------------------------
 
     if needs_clarification:
 
         if not clarification:
 
-            clarification = (
-                f"Sure! Which {selected_service} service "
-                "are you looking for?"
-            )
+            if selected_service:
 
-        conversation_history.append({
-            "role": "assistant",
-            "content": clarification
-        })
+                clarification = (
+                    f"Sure! Which {selected_service} service "
+                    "are you looking for?"
+                )
+
+            else:
+
+                clarification = (
+                    "Sure! Could you please tell me "
+                    "which service you are looking for?"
+                )
+
+        save_message(
+            "assistant",
+            clarification
+        )
 
         return clarification
 
-    # =====================================================
-    # RAG
-    # =====================================================
+    # -----------------------------------------------------
+    # RAG RETRIEVAL
+    # -----------------------------------------------------
 
     context = retrieve_information(
         question,
         selected_service
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # NO CONTEXT
-    # =====================================================
+    # -----------------------------------------------------
 
     if not context.strip():
 
@@ -462,16 +547,16 @@ def chat(question):
             "Email: gautamkhatri325@gmail.com"
         )
 
-        conversation_history.append({
-            "role": "assistant",
-            "content": answer
-        })
+        save_message(
+            "assistant",
+            answer
+        )
 
         return answer
 
-    # =====================================================
-    # GEMINI
-    # =====================================================
+    # -----------------------------------------------------
+    # GENERATE ANSWER
+    # -----------------------------------------------------
 
     answer = generate_answer(
         question,
@@ -479,13 +564,13 @@ def chat(question):
         context
     )
 
-    # =====================================================
-    # SAVE ANSWER
-    # =====================================================
+    # -----------------------------------------------------
+    # SAVE RESPONSE
+    # -----------------------------------------------------
 
-    conversation_history.append({
-        "role": "assistant",
-        "content": answer
-    })
+    save_message(
+        "assistant",
+        answer
+    )
 
     return answer
