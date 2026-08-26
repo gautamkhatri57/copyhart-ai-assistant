@@ -2,7 +2,6 @@ import os
 import re
 import json
 import streamlit as st
-
 from dotenv import load_dotenv
 from google import genai
 
@@ -10,28 +9,23 @@ from rag.reranker import rerank
 
 
 # =========================================================
-# ENVIRONMENT / API KEY
+# ENVIRONMENT
 # =========================================================
 
 load_dotenv()
 
-# First try Streamlit Cloud Secrets
-api_key = st.secrets.get("GEMINI_API_KEY", None)
+# Local .env
+api_key = os.getenv("GEMINI_API_KEY")
 
-# If not found, use local .env
+# Streamlit Cloud Secrets
 if not api_key:
-    api_key = os.getenv("GEMINI_API_KEY")
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        api_key = None
 
 if not api_key:
-    raise RuntimeError(
-        "GEMINI_API_KEY is not set. "
-        "Add it to .env locally or Streamlit Cloud Secrets."
-    )
-
-
-# =========================================================
-# GEMINI CLIENT
-# =========================================================
+    raise RuntimeError("GEMINI_API_KEY is not set")
 
 client = genai.Client(api_key=api_key)
 
@@ -42,25 +36,21 @@ MODEL_NAME = "gemini-3.6-flash"
 # CONVERSATION STATE
 # =========================================================
 
-if "conversation_history" not in st.session_state:
-    st.session_state.conversation_history = []
-
-if "selected_service" not in st.session_state:
-    st.session_state.selected_service = None
+conversation_history = []
+selected_service = None
 
 
 # =========================================================
 # GREETING
 # =========================================================
 
-GREETINGS = {
+GREETING_WORDS = {
     "hi",
     "hello",
     "hey",
     "hii",
     "hiii",
-    "hello there",
-    "hey there",
+    "helo",
     "good morning",
     "good afternoon",
     "good evening"
@@ -68,18 +58,18 @@ GREETINGS = {
 
 
 def is_greeting(question):
+    cleaned = question.lower().strip()
 
     cleaned = re.sub(
-        r"[^a-zA-Z\s]",
+        r"[^\w\s]",
         "",
-        question.lower()
-    ).strip()
+        cleaned
+    )
 
-    return cleaned in GREETINGS
+    return cleaned in GREETING_WORDS
 
 
 def greeting_response():
-
     return (
         "Hello! 👋 I'm CopyHart AI Assistant. "
         "How can I help you today?"
@@ -87,29 +77,27 @@ def greeting_response():
 
 
 # =========================================================
-# HISTORY
+# UTILITY
 # =========================================================
+
+def clean_text(text):
+
+    return re.sub(
+        r"[^a-zA-Z0-9\s]",
+        " ",
+        text.lower()
+    ).strip()
+
 
 def get_history():
 
-    history = st.session_state.conversation_history
+    if not conversation_history:
+        return ""
 
     return "\n".join(
         f"{item['role']}: {item['content']}"
-        for item in history[-8:]
+        for item in conversation_history[-8:]
     )
-
-
-# =========================================================
-# SAVE MESSAGE
-# =========================================================
-
-def save_message(role, content):
-
-    st.session_state.conversation_history.append({
-        "role": role,
-        "content": content
-    })
 
 
 # =========================================================
@@ -123,44 +111,37 @@ def analyze_intent(question):
     prompt = f"""
 You are the intent analyzer for CopyHart AI Assistant.
 
-Understand what the user wants.
+Your job is to understand what the user wants.
 
-The user may ask about:
+Use the conversation history to understand context.
 
-- Trademark
-- Copyright
-- Patent
-- FSSAI
-- ISO
-- GST
-- Company Registration
-- MSME / Udyam
-- IEC
-- Website
-- SEO
-- Branding
-- Logo
-- Other CopyHart services
+The user may mention:
 
-Use conversation history for follow-up questions.
+- a broad service
+- a specific service
+- an activity
+- a follow-up question
+- a document question
+- a process question
+- a timeline question
+- a requirement question
 
 IMPORTANT:
 
 If the user only mentions a broad service such as:
 
-trademark
-copyright
-patent
-FSSAI
-ISO
+"trademark"
+"copyright"
+"patent"
+"FSSAI"
+"ISO"
 
-and has NOT specified what they want,
-ask for clarification.
+and has NOT specified what they want to do with that service,
+then clarification is required.
 
 Example:
 
-User:
-trademark
+User: trademark
 
 Return:
 
@@ -173,8 +154,7 @@ Return:
 
 But:
 
-User:
-trademark registration
+User: trademark registration
 
 Return:
 
@@ -185,13 +165,17 @@ Return:
     "clarification": ""
 }}
 
-Follow-up example:
+If the user asks:
 
-Previous:
+"What documents are required?"
+
+and previous conversation is:
+
 User: trademark registration
 
-Current:
-User: what documents are required?
+understand that the user means:
+
+"What documents are required for Trademark Registration?"
 
 Return:
 
@@ -202,7 +186,7 @@ Return:
     "clarification": ""
 }}
 
-Do not invent information.
+Do NOT invent information.
 
 Return ONLY valid JSON.
 
@@ -222,38 +206,18 @@ Current User:
 
         text = response.text.strip()
 
-        # Remove markdown JSON blocks if Gemini returns them
         text = re.sub(
-            r"^```json\s*",
-            "",
-            text,
-            flags=re.IGNORECASE
-        )
-
-        text = re.sub(
-            r"^```\s*",
+            r"```json|```",
             "",
             text
-        )
-
-        text = re.sub(
-            r"\s*```$",
-            "",
-            text
-        )
-
-        text = text.strip()
+        ).strip()
 
         return json.loads(text)
 
     except Exception as e:
 
-        print("=" * 60)
-        print("INTENT ANALYSIS ERROR")
-        print(e)
-        print("=" * 60)
+        print("GEMINI INTENT ERROR:", repr(e))
 
-        # Safe fallback
         return {
             "needs_clarification": False,
             "service": None,
@@ -279,8 +243,8 @@ Current Service:
 User Question:
 {question}
 
-Retrieve information specifically relevant to
-the current service and user question.
+Retrieve information specifically relevant to this service
+and this user question.
 """
 
     try:
@@ -290,34 +254,31 @@ the current service and user question.
             top_k=5
         )
 
-        if not results:
-            return ""
-
-        context_parts = []
-
-        for result in results:
-
-            if isinstance(result, dict):
-
-                text = result.get("text", "")
-
-            else:
-
-                text = str(result)
-
-            if text:
-                context_parts.append(text)
-
-        return "\n\n".join(context_parts)
-
     except Exception as e:
 
-        print("=" * 60)
-        print("RAG / RERANKER ERROR")
-        print(e)
-        print("=" * 60)
+        print("RERANKER ERROR:", repr(e))
 
         return ""
+
+    if not results:
+        return ""
+
+    context_parts = []
+
+    for result in results:
+
+        if isinstance(result, dict):
+
+            text = result.get("text", "")
+
+        else:
+
+            text = str(result)
+
+        if text:
+            context_parts.append(text)
+
+    return "\n\n".join(context_parts)
 
 
 # =========================================================
@@ -344,7 +305,7 @@ STRICT RULES:
 
 3. Never guess or invent information.
 
-4. Use conversation history to understand
+4. Use the conversation history to understand
 follow-up questions.
 
 5. If the user asks:
@@ -409,27 +370,20 @@ Answer:
             contents=prompt
         )
 
-        answer = response.text.strip()
+        if not response.text:
 
-        if not answer:
             return (
-                "Sorry, I could not generate a response right now. "
+                "Sorry, I could not generate a response. "
                 "Please try again."
             )
 
-        return answer
+        return response.text.strip()
 
     except Exception as e:
 
-        print("=" * 60)
-        print("GEMINI ERROR")
-        print(e)
-        print("=" * 60)
+        print("GEMINI ANSWER ERROR:", repr(e))
 
-        return (
-            "Sorry, something went wrong while processing "
-            "your request. Please try again."
-        )
+        return f"Gemini Error: {str(e)}"
 
 
 # =========================================================
@@ -438,9 +392,12 @@ Answer:
 
 def chat(question):
 
+    global selected_service
+
     question = question.strip()
 
     if not question:
+
         return "Please enter a question."
 
     # -----------------------------------------------------
@@ -451,8 +408,15 @@ def chat(question):
 
         answer = greeting_response()
 
-        save_message("user", question)
-        save_message("assistant", answer)
+        conversation_history.append({
+            "role": "user",
+            "content": question
+        })
+
+        conversation_history.append({
+            "role": "assistant",
+            "content": answer
+        })
 
         return answer
 
@@ -460,13 +424,13 @@ def chat(question):
     # SAVE USER MESSAGE
     # -----------------------------------------------------
 
-    save_message(
-        "user",
-        question
-    )
+    conversation_history.append({
+        "role": "user",
+        "content": question
+    })
 
     # -----------------------------------------------------
-    # INTENT ANALYSIS
+    # AI INTENT ANALYSIS
     # -----------------------------------------------------
 
     intent_data = analyze_intent(question)
@@ -491,12 +455,10 @@ def chat(question):
 
     if detected_service:
 
-        st.session_state.selected_service = detected_service
-
-    selected_service = st.session_state.selected_service
+        selected_service = detected_service
 
     # -----------------------------------------------------
-    # CLARIFICATION
+    # CLARIFICATION REQUIRED
     # -----------------------------------------------------
 
     if needs_clarification:
@@ -506,8 +468,8 @@ def chat(question):
             if selected_service:
 
                 clarification = (
-                    f"Sure! Which {selected_service} service "
-                    "are you looking for?"
+                    f"Sure! Which {selected_service} "
+                    "service are you looking for?"
                 )
 
             else:
@@ -517,10 +479,10 @@ def chat(question):
                     "which service you are looking for?"
                 )
 
-        save_message(
-            "assistant",
-            clarification
-        )
+        conversation_history.append({
+            "role": "assistant",
+            "content": clarification
+        })
 
         return clarification
 
@@ -534,7 +496,7 @@ def chat(question):
     )
 
     # -----------------------------------------------------
-    # NO CONTEXT
+    # NO INFORMATION
     # -----------------------------------------------------
 
     if not context.strip():
@@ -547,15 +509,15 @@ def chat(question):
             "Email: gautamkhatri325@gmail.com"
         )
 
-        save_message(
-            "assistant",
-            answer
-        )
+        conversation_history.append({
+            "role": "assistant",
+            "content": answer
+        })
 
         return answer
 
     # -----------------------------------------------------
-    # GENERATE ANSWER
+    # GENERATE FINAL ANSWER
     # -----------------------------------------------------
 
     answer = generate_answer(
@@ -565,12 +527,12 @@ def chat(question):
     )
 
     # -----------------------------------------------------
-    # SAVE RESPONSE
+    # SAVE ASSISTANT RESPONSE
     # -----------------------------------------------------
 
-    save_message(
-        "assistant",
-        answer
-    )
+    conversation_history.append({
+        "role": "assistant",
+        "content": answer
+    })
 
     return answer
