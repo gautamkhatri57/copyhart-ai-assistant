@@ -9,30 +9,28 @@ from rag.reranker import rerank
 
 
 # =========================================================
-# LOAD ENV
+# LOAD ENVIRONMENT
 # =========================================================
 
 load_dotenv()
 
 
 # =========================================================
-# GET GEMINI API KEY
-# LOCAL:
-#   .env
-#
-# STREAMLIT CLOUD:
-#   st.secrets
+# API KEY
+# Supports:
+# 1. Local .env
+# 2. Streamlit Cloud Secrets
 # =========================================================
 
 def get_api_key():
 
-    # 1. Local .env
+    # Local .env
     api_key = os.getenv("GEMINI_API_KEY")
 
     if api_key:
         return api_key
 
-    # 2. Streamlit Cloud Secrets
+    # Streamlit Cloud
     try:
         import streamlit as st
 
@@ -70,7 +68,7 @@ MODEL_NAME = "gemini-3.6-flash"
 
 
 # =========================================================
-# CONVERSATION
+# CONVERSATION STATE
 # =========================================================
 
 conversation_history = []
@@ -79,7 +77,7 @@ selected_service = None
 
 
 # =========================================================
-# GREETINGS
+# GREETING
 # =========================================================
 
 def is_greeting(question):
@@ -144,6 +142,7 @@ def is_generic_request(question):
 
     services = [
         "trademark",
+        "trade mark",
         "copyright",
         "patent",
         "fssai",
@@ -159,8 +158,10 @@ def is_generic_request(question):
         "spice",
         "logo",
         "website",
+        "seo",
         "branding",
-        "brand"
+        "brand",
+        "legal"
     ]
 
     has_generic = any(
@@ -188,7 +189,9 @@ def detect_service(question):
 
         "trademark": [
             "trademark",
-            "trade mark"
+            "trade mark",
+            "brand registration",
+            "brand name registration"
         ],
 
         "copyright": [
@@ -227,8 +230,7 @@ def detect_service(question):
         ],
 
         "bis": [
-            "bis certification",
-            "bis"
+            "bis certification"
         ],
 
         "spice": [
@@ -236,33 +238,33 @@ def detect_service(question):
             "spice certification"
         ],
 
-        "iso 9001": [
+        "iso9001": [
             "iso 9001"
         ],
 
-        "iso 13485": [
+        "iso13485": [
             "iso 13485"
         ],
 
-        "iso 14001": [
+        "iso14001": [
             "iso 14001"
         ],
 
-        "iso 22000": [
+        "iso22000": [
             "iso 22000"
         ],
 
-        "iso 45001": [
+        "iso45001": [
             "iso 45001"
         ],
 
-        "iso 27001": [
+        "iso27001": [
             "iso 27001"
         ],
 
         "gmp": [
             "gmp",
-            "good manufacturing"
+            "good manufacturing practices"
         ],
 
         "logo": [
@@ -280,10 +282,24 @@ def detect_service(question):
             "branding",
             "brand development",
             "brand marketing"
+        ],
+
+        # =================================================
+        # LEGAL SERVICES
+        # =================================================
+
+        "legal": [
+            "legal services",
+            "legal service",
+            "legal sevices",
+            "legal help",
+            "legal support",
+            "legal assistance"
         ]
     }
 
-    fallback = {
+
+    service_names = {
 
         "trademark":
             "Trademark Registration",
@@ -292,7 +308,7 @@ def detect_service(question):
             "Copyright Registration",
 
         "patent":
-            "Patent Registration",
+            "Patent Registration / Filing",
 
         "fssai":
             "FSSAI License & Registration",
@@ -304,7 +320,7 @@ def detect_service(question):
             "IEC Registration",
 
         "apeda":
-            "APEDA Registration",
+            "APEDA Registration / RCMC",
 
         "barcode":
             "Barcode Registration",
@@ -313,24 +329,24 @@ def detect_service(question):
             "BIS Certification",
 
         "spice":
-            "Spice Board Certification",
+            "Spice Board Registration",
 
-        "iso 9001":
+        "iso9001":
             "ISO 9001 Certification",
 
-        "iso 13485":
+        "iso13485":
             "ISO 13485 Medical Devices",
 
-        "iso 14001":
+        "iso14001":
             "ISO 14001 Environmental Management",
 
-        "iso 22000":
+        "iso22000":
             "ISO 22000 Food Safety Management",
 
-        "iso 45001":
+        "iso45001":
             "ISO 45001 Occupational Health & Safety",
 
-        "iso 27001":
+        "iso27001":
             "ISO 27001 Information Security",
 
         "gmp":
@@ -343,19 +359,112 @@ def detect_service(question):
             "Custom Websites & SEO",
 
         "brand":
-            "Brand Development & Marketing"
+            "Brand Development & Marketing",
+
+        "legal":
+            "Legal Services"
     }
+
 
     for service, keywords in service_keywords.items():
 
-        if any(
-            keyword in q
-            for keyword in keywords
-        ):
+        for keyword in keywords:
 
-            return fallback.get(service)
+            if keyword in q:
+
+                return service_names.get(service)
+
 
     return None
+
+
+# =========================================================
+# GENERIC FOLLOW-UP
+# =========================================================
+
+def is_generic_followup(question):
+
+    q = clean_text(question)
+
+    followups = [
+
+        # -------------------------------------------------
+        # DEFINITION / GENERAL
+        # -------------------------------------------------
+
+        "what is",
+        "what are",
+        "what does",
+        "what do",
+        "what is it",
+        "what is this",
+        "what does it mean",
+
+        "tell me about",
+        "tell me more",
+        "explain",
+        "explain it",
+        "explain this",
+
+        # -------------------------------------------------
+        # DOCUMENTS
+        # -------------------------------------------------
+
+        "what documents",
+        "which documents",
+        "documents required",
+        "required documents",
+        "documents needed",
+        "what documents do i need",
+        "which documents do i need",
+
+        # -------------------------------------------------
+        # APPLICATION
+        # -------------------------------------------------
+
+        "how can i apply",
+        "how do i apply",
+        "how to apply",
+
+        "how can i register",
+        "how do i register",
+        "how to register",
+
+        # -------------------------------------------------
+        # PROCESS
+        # -------------------------------------------------
+
+        "what is the process",
+        "what's the process",
+        "process",
+        "how does it work",
+        "how it works",
+
+        # -------------------------------------------------
+        # REQUIREMENTS
+        # -------------------------------------------------
+
+        "what are the requirements",
+        "requirements",
+
+        "eligibility",
+        "who is eligible",
+
+        # -------------------------------------------------
+        # TIMELINE
+        # -------------------------------------------------
+
+        "how long",
+        "timeline",
+        "how much time",
+        "how many days"
+    ]
+
+
+    return any(
+        phrase in q
+        for phrase in followups
+    )
 
 
 # =========================================================
@@ -397,44 +506,38 @@ def clarification_message(question):
 
 
 # =========================================================
-# GENERIC FOLLOW-UP
+# LEGAL SERVICES RESPONSE
 # =========================================================
 
-def is_generic_followup(question):
+def legal_services_response():
 
-    q = clean_text(question)
+    return """
+CopyHart provides support for various legal and
+intellectual-property services, including:
 
-    followups = [
+• Trademark Registration
+• Trademark Objection / Examination Reply
+• Trademark Hearing
+• Trademark Renewal
+• Trademark Opposition
+• Trademark Rectification
+• Trademark Assignment / Ownership Transfer
+• Trademark Licensing
+• International Trademark Registration (Madrid)
+• Well-Known Trademark Services
+• Copyright Registration
+• Patent Registration / Filing
+• Patent Prior-Art Search
+• Provisional Patent Filing
+• PCT Filing
+• Design Registration
+• Geographical Indication (GI) Tag
+• IP Monitoring & Journaling
+• IP Portfolio Audit
 
-        "what documents",
-        "which documents",
-        "documents required",
-        "required documents",
-
-        "how can i apply",
-        "how do i apply",
-        "how to apply",
-
-        "what is the process",
-        "process",
-
-        "how long",
-        "timeline",
-
-        "eligibility",
-
-        "what are the requirements",
-        "requirements",
-
-        "what is it",
-        "tell me more",
-        "how does it work"
-    ]
-
-    return any(
-        phrase in q
-        for phrase in followups
-    )
+If you tell me your specific requirement, I can help identify
+the most relevant CopyHart service.
+""".strip()
 
 
 # =========================================================
@@ -491,6 +594,41 @@ def chat(question):
 
 
     # =====================================================
+    # LEGAL SERVICES
+    # =====================================================
+
+    clean_question = clean_text(question)
+
+    legal_queries = [
+        "legal",
+        "legal service",
+        "legal services",
+        "legal sevices",
+        "legal help",
+        "legal support",
+        "legal assistance"
+    ]
+
+    if clean_question in legal_queries:
+
+        selected_service = "Legal Services"
+
+        answer = legal_services_response()
+
+        conversation_history.append({
+            "role": "user",
+            "content": question
+        })
+
+        conversation_history.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+        return answer
+
+
+    # =====================================================
     # GENERIC REQUEST
     # =====================================================
 
@@ -512,7 +650,7 @@ def chat(question):
 
 
     # =====================================================
-    # SERVICE DETECTION
+    # DETECT SERVICE
     # =====================================================
 
     detected_service = detect_service(question)
@@ -521,15 +659,18 @@ def chat(question):
 
         selected_service = detected_service
 
-    elif not is_generic_followup(question):
 
-        if not selected_service:
+    # =====================================================
+    # FOLLOW-UP
+    # =====================================================
 
-            # IMPORTANT:
-            # Do NOT block normal questions such as
-            # "What is FSSAI?"
-            #
-            # RAG should still receive the question.
+    elif is_generic_followup(question):
+
+        if selected_service:
+
+            pass
+
+        else:
 
             selected_service = None
 
@@ -553,7 +694,7 @@ within this service.
 
 
     # =====================================================
-    # RERANK
+    # RERANK / RETRIEVAL
     # =====================================================
 
     retrieval_start = time.time()
@@ -621,7 +762,7 @@ within this service.
 
 
     # =====================================================
-    # HISTORY
+    # CONVERSATION HISTORY
     # =====================================================
 
     history = "\n".join(
@@ -633,7 +774,7 @@ within this service.
 
 
     # =====================================================
-    # PROMPT
+    # GEMINI PROMPT
     # =====================================================
 
     prompt = f"""
@@ -656,10 +797,14 @@ STRICT RULES:
 follow-up questions.
 
 5. Generic follow-up questions such as:
+
 "What documents do I need?"
 "How do I apply?"
 "What is the process?"
 "What are the requirements?"
+"What is it?"
+"Tell me about it."
+"Explain it."
 
 must be answered for the CURRENT SERVICE.
 
@@ -764,6 +909,10 @@ Answer:
         "content": answer
     })
 
+
+    # =====================================================
+    # TOTAL TIME
+    # =====================================================
 
     total_time = time.time() - total_start
 
