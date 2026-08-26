@@ -43,28 +43,103 @@ st.markdown(
     """
     <style>
 
+    /* =====================================================
+       MAIN APP
+       Automatically follows Streamlit Light/Dark theme
+       ===================================================== */
+
     .stApp {
-        background-color: #f9fafb;
+        background-color: var(--background-color);
+        color: var(--text-color);
     }
 
+
+    /* =====================================================
+       MAIN CONTENT
+       ===================================================== */
+
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+
+
+    /* =====================================================
+       HEADER
+       ===================================================== */
+
     .header {
-        background-color: #111827;
-        color: white;
-        padding: 20px;
-        border-radius: 12px;
+        background-color: var(--secondary-background-color);
+        color: var(--text-color);
+
+        padding: 22px;
+        border-radius: 14px;
+
         text-align: center;
+
         margin-bottom: 20px;
+
+        border: 1px solid rgba(128, 128, 128, 0.20);
     }
 
     .header h1 {
         margin: 0;
-        font-size: 24px;
+        font-size: 25px;
+        font-weight: 700;
+        color: var(--text-color);
     }
 
     .header p {
-        margin: 5px 0 0 0;
-        font-size: 13px;
-        opacity: 0.8;
+        margin: 6px 0 0 0;
+        font-size: 14px;
+        color: var(--text-color);
+        opacity: 0.7;
+    }
+
+
+    /* =====================================================
+       CHAT MESSAGE
+       ===================================================== */
+
+    [data-testid="stChatMessage"] {
+        color: var(--text-color);
+    }
+
+    [data-testid="stChatMessage"] p {
+        color: var(--text-color);
+    }
+
+
+    /* =====================================================
+       CHAT INPUT
+       ===================================================== */
+
+    [data-testid="stChatInput"] {
+        background-color: var(--secondary-background-color);
+        border-radius: 12px;
+    }
+
+    [data-testid="stChatInput"] textarea {
+        color: var(--text-color);
+    }
+
+
+    /* =====================================================
+       CHAT INPUT PLACEHOLDER
+       ===================================================== */
+
+    [data-testid="stChatInput"] textarea::placeholder {
+        color: var(--text-color);
+        opacity: 0.55;
+    }
+
+
+    /* =====================================================
+       REMOVE EXTRA BUTTONS
+       ===================================================== */
+
+    .stButton {
+        display: none;
     }
 
     </style>
@@ -147,9 +222,10 @@ if question:
     if not question:
         st.stop()
 
-    # -----------------------------------------------------
+
+    # =====================================================
     # USER MESSAGE
-    # -----------------------------------------------------
+    # =====================================================
 
     st.session_state.messages.append(
         {
@@ -166,9 +242,9 @@ if question:
         st.write(question)
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # AI RESPONSE
-    # -----------------------------------------------------
+    # =====================================================
 
     with st.chat_message(
         "assistant",
@@ -195,9 +271,9 @@ if question:
         st.write(answer)
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # SAVE RESPONSE
-    # -----------------------------------------------------
+    # =====================================================
 
     st.session_state.messages.append(
         {

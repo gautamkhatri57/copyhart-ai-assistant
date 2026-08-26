@@ -1,8 +1,8 @@
 import os
 import re
 import json
-
 import streamlit as st
+
 from dotenv import load_dotenv
 from google import genai
 
@@ -15,40 +15,69 @@ from rag.reranker import rerank
 
 load_dotenv()
 
+# Local .env
+api_key = os.getenv("GEMINI_API_KEY")
+
 # Streamlit Cloud Secrets
-api_key = st.secrets.get("GEMINI_API_KEY")
+try:
+    if not api_key:
+        api_key = st.secrets.get("GEMINI_API_KEY")
+except Exception:
+    pass
 
 if not api_key:
-    raise RuntimeError("GEMINI_API_KEY is not set")
+    raise RuntimeError(
+        "GEMINI_API_KEY is not configured. "
+        "Add it to .env or Streamlit Secrets."
+    )
 
-client = genai.Client(
-    api_key=api_key
-)
+client = genai.Client(api_key=api_key)
+
+MODEL_NAME = "gemini-3.6-flash"
 
 
 # =========================================================
-# CONVERSATION STATE
+# CONVERSATION
 # =========================================================
 
 conversation_history = []
-
 selected_service = None
+
+
+# =========================================================
+# GREETING
+# =========================================================
+
+def is_greeting(text):
+
+    text = text.lower().strip()
+
+    greetings = [
+        "hi",
+        "hello",
+        "hey",
+        "hii",
+        "hiii",
+        "helo",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "how are you",
+        "hey there",
+        "hello there"
+    ]
+
+    return text in greetings
 
 
 # =========================================================
 # UTILITY
 # =========================================================
 
-def clean_text(text):
-
-    return re.sub(
-        r"[^a-zA-Z0-9\s]",
-        " ",
-        text.lower()
-    ).strip()
-
-
 def get_history():
+
+    if not conversation_history:
+        return ""
 
     return "\n".join(
         f"{item['role']}: {item['content']}"
@@ -57,7 +86,7 @@ def get_history():
 
 
 # =========================================================
-# AI INTENT ANALYSIS
+# INTENT ANALYSIS
 # =========================================================
 
 def analyze_intent(question):
@@ -67,37 +96,23 @@ def analyze_intent(question):
     prompt = f"""
 You are the intent analyzer for CopyHart AI Assistant.
 
-Your job is to understand what the user wants.
-
-Use the conversation history to understand context.
-
-The user may mention:
-
-- a broad service
-- a specific service
-- an activity
-- a follow-up question
-- a document question
-- a process question
-- a timeline question
-- a requirement question
-
-IMPORTANT:
+Understand the user's request.
 
 If the user only mentions a broad service such as:
 
-"trademark"
-"copyright"
-"patent"
-"FSSAI"
-"ISO"
+trademark
+copyright
+patent
+FSSAI
+ISO
 
-and has NOT specified what they want to do with that service,
-then clarification is required.
+and does not specify what they want,
+ask a clarification question.
 
 Example:
 
-User: trademark
+User:
+trademark
 
 Return:
 
@@ -108,9 +123,10 @@ Return:
     "clarification": "Which trademark service are you looking for?"
 }}
 
-But:
+Example:
 
-User: trademark registration
+User:
+trademark registration
 
 Return:
 
@@ -121,28 +137,13 @@ Return:
     "clarification": ""
 }}
 
-And:
+If the previous service was FSSAI and the user says:
 
-User: what documents are required?
+what documents are required?
 
-If previous conversation is:
+understand that they mean:
 
-User: trademark registration
-
-then understand that the user is asking:
-
-"What documents are required for Trademark Registration?"
-
-Return:
-
-{{
-    "needs_clarification": false,
-    "service": "Trademark Registration",
-    "intent": "documents",
-    "clarification": ""
-}}
-
-Do NOT invent information.
+documents required for FSSAI.
 
 Return ONLY valid JSON.
 
@@ -156,27 +157,24 @@ Current User:
     try:
 
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt,
-            config={
-                "temperature": 0.1
-            }
+            model=MODEL_NAME,
+            contents=prompt
         )
 
         text = response.text.strip()
 
-        text = re.sub(
-            r"```json|```",
-            "",
-            text
-        ).strip()
+        # Remove markdown JSON fences
+        text = re.sub(r"```json", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"```", "", text)
+        text = text.strip()
 
         return json.loads(text)
 
     except Exception as e:
 
-        print(f"Intent analysis error: {e}")
+        print("INTENT ERROR:", repr(e))
 
+        # Do not stop the chatbot if intent analysis fails
         return {
             "needs_clarification": False,
             "service": None,
@@ -189,22 +187,20 @@ Current User:
 # RAG RETRIEVAL
 # =========================================================
 
-def retrieve_information(question, service):
-
-    retrieval_query = question
+def retrieve_information(question, service=None):
 
     if service:
 
         retrieval_query = f"""
-Current Service:
-{service}
+Service: {service}
 
 User Question:
 {question}
-
-Retrieve information specifically relevant to this service
-and this user question.
 """
+
+    else:
+
+        retrieval_query = question
 
     try:
 
@@ -213,23 +209,36 @@ and this user question.
             top_k=5
         )
 
+        if not results:
+            return ""
+
+        context_parts = []
+
+        for result in results:
+
+            if isinstance(result, dict):
+
+                text = result.get("text", "")
+
+            else:
+
+                text = str(result)
+
+            if text and text.strip():
+
+                context_parts.append(text.strip())
+
+        return "\n\n".join(context_parts)
+
     except Exception as e:
 
-        print(f"Reranker error: {e}")
+        print("RAG ERROR:", repr(e))
 
         return ""
 
-    context = "\n\n".join(
-        result.get("text", "")
-        for result in results
-        if result.get("text")
-    )
-
-    return context
-
 
 # =========================================================
-# FINAL AI RESPONSE
+# FINAL ANSWER
 # =========================================================
 
 def generate_answer(question, service, context):
@@ -239,37 +248,36 @@ def generate_answer(question, service, context):
     prompt = f"""
 You are CopyHart AI Assistant.
 
-Always answer in English.
+Answer the user using ONLY the Service Data below.
 
-CURRENT SERVICE:
-{service}
+RULES:
 
-STRICT RULES:
+1. Always answer in English.
 
-1. Use ONLY the Service Data provided below.
+2. Do NOT use outside knowledge.
 
-2. Never use outside knowledge.
+3. Do NOT invent information.
 
-3. Never guess or invent information.
-
-4. Use the conversation history to understand
-follow-up questions.
+4. Use conversation history for follow-up questions.
 
 5. If the user asks:
+   - documents
+   - process
+   - requirements
+   - timeline
+   - eligibility
+   - procedure
 
-"What documents do I need?"
-"How do I apply?"
-"What is the process?"
-"What are the requirements?"
-"What is the timeline?"
+   understand the question according to the current service.
 
-understand the question according to the CURRENT SERVICE.
+6. Do not switch services unless the user explicitly changes
+the service.
 
-6. Never switch to another service unless the user
-explicitly changes the service.
+7. If the Service Data contains the answer,
+answer clearly and directly.
 
-7. If the requested information is not available
-in the Service Data, reply exactly:
+8. If the Service Data does NOT contain the requested information,
+reply exactly:
 
 I don't have information about this in our current service database.
 
@@ -278,24 +286,25 @@ You can reach out to our team for further assistance.
 Phone: 8347520507
 Email: gautamkhatri325@gmail.com
 
-8. Contact information must ONLY be provided when
-the requested information is unavailable.
+9. Do not provide contact information when the answer exists
+in the Service Data.
 
-9. Keep answers short, clear and professional.
+10. Keep answers short, clear and professional.
 
-10. Do not mention:
+11. Never mention:
 - RAG
-- retrieval
 - reranker
 - database
+- embeddings
+- vector
 - prompt
 - AI model
 - internal processing
 
-11. Answer only what the user asked.
+12. Answer only what the user asked.
 
-12. If the Service Data contains the answer,
-give the answer clearly.
+Current Service:
+{service}
 
 Conversation History:
 {history}
@@ -312,18 +321,23 @@ Answer:
     try:
 
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt,
-            config={
-                "temperature": 0.1
-            }
+            model=MODEL_NAME,
+            contents=prompt
         )
 
-        return response.text.strip()
+        answer = response.text
+
+        if not answer:
+            return (
+                "I don't have information about this in our "
+                "current service database."
+            )
+
+        return answer.strip()
 
     except Exception as e:
 
-        print(f"Gemini error: {e}")
+        print("GEMINI ERROR:", repr(e))
 
         return (
             "Sorry, something went wrong while processing "
@@ -332,7 +346,7 @@ Answer:
 
 
 # =========================================================
-# MAIN CHAT FUNCTION
+# MAIN CHAT
 # =========================================================
 
 def chat(question):
@@ -345,18 +359,41 @@ def chat(question):
 
         return "Please enter a question."
 
-    # -----------------------------------------------------
-    # Save User Message
-    # -----------------------------------------------------
+    # =====================================================
+    # GREETING
+    # =====================================================
+
+    if is_greeting(question):
+
+        answer = (
+            "Hello! 👋 I'm CopyHart AI Assistant. "
+            "How can I help you today?"
+        )
+
+        conversation_history.append({
+            "role": "user",
+            "content": question
+        })
+
+        conversation_history.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+        return answer
+
+    # =====================================================
+    # SAVE USER MESSAGE
+    # =====================================================
 
     conversation_history.append({
         "role": "user",
         "content": question
     })
 
-    # -----------------------------------------------------
-    # AI Intent Analysis
-    # -----------------------------------------------------
+    # =====================================================
+    # INTENT
+    # =====================================================
 
     intent_data = analyze_intent(question)
 
@@ -374,17 +411,17 @@ def chat(question):
         ""
     )
 
-    # -----------------------------------------------------
-    # Update Current Service
-    # -----------------------------------------------------
+    # =====================================================
+    # SERVICE
+    # =====================================================
 
     if detected_service:
 
         selected_service = detected_service
 
-    # -----------------------------------------------------
-    # Clarification Required
-    # -----------------------------------------------------
+    # =====================================================
+    # CLARIFICATION
+    # =====================================================
 
     if needs_clarification:
 
@@ -402,18 +439,18 @@ def chat(question):
 
         return clarification
 
-    # -----------------------------------------------------
-    # RAG Retrieval
-    # -----------------------------------------------------
+    # =====================================================
+    # RAG
+    # =====================================================
 
     context = retrieve_information(
         question,
         selected_service
     )
 
-    # -----------------------------------------------------
-    # No Information
-    # -----------------------------------------------------
+    # =====================================================
+    # NO CONTEXT
+    # =====================================================
 
     if not context.strip():
 
@@ -432,9 +469,9 @@ def chat(question):
 
         return answer
 
-    # -----------------------------------------------------
-    # Generate Final Answer
-    # -----------------------------------------------------
+    # =====================================================
+    # GEMINI
+    # =====================================================
 
     answer = generate_answer(
         question,
@@ -442,9 +479,9 @@ def chat(question):
         context
     )
 
-    # -----------------------------------------------------
-    # Save Assistant Response
-    # -----------------------------------------------------
+    # =====================================================
+    # SAVE ANSWER
+    # =====================================================
 
     conversation_history.append({
         "role": "assistant",
